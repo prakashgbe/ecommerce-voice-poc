@@ -1,0 +1,53 @@
+
+[
+  {
+    "order_id": "ORD1001",
+    "customer_id": "CUST1001",
+    "product": "Wireless Headphones",
+    "amount": 2499,
+    "status": "processing",
+    "order_date": "2026-10-25",
+    "delivered_date": null,
+    "shipment_status": "not_shipped"
+  },
+  {
+    "order_id": "ORD1002",
+    "customer_id": "CUST1001",
+    "product": "Smart Watch",
+    "amount": 3999,
+    "status": "shipped",
+    "order_date": "2026-10-20",
+    "delivered_date": null,
+    "shipment_status": "in_transit"
+  },
+  {
+    "order_id": "ORD1003",
+    "customer_id": "CUST1002",
+    "product": "Bluetooth Speaker",
+    "amount": 1999,
+    "status": "delivered",
+    "order_date": "2026-10-10",
+    "delivered_date": "2026-10-12",
+    "shipment_status": "delivered"
+  },
+  {
+    "order_id": "ORD1004",
+    "customer_id": "CUST1002",
+    "product": "Laptop Stand",
+    "amount": 1299,
+    "status": "delivered",
+    "order_date": "2026-09-01",
+    "delivered_date": "2026-09-04",
+    "shipment_status": "delivered"
+  },
+  {
+    "order_id": "ORD1005",
+    "customer_id": "CUST1003",
+    "product": "USB-C Hub",
+    "amount": 1799,
+    "status": "processing",
+    "order_date": "2026-10-26",
+    "delivered_date": null,
+    "shipment_status": "not_shipped"
+  }
+]

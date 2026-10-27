@@ -1,0 +1,3 @@
+In Powershell 1: python backend/voice_agent.py dev
+
+In Powershell 2: lk --version
