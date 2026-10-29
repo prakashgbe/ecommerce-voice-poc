@@ -1,3 +1,23 @@
-In Powershell 1: python backend/voice_agent.py dev
+In powershell 1, start FastAPI backend: 
+cd C:\Prakash\sandbox\ecommerce-voice-poc
+.\.venv\Scripts\Activate.ps1
+uvicorn backend.main:app --reload
 
-In Powershell 2: lk --version
+In Powershell 2: start voice agent: 
+cd C:\Prakash\sandbox\ecommerce-voice-poc
+.\.venv\Scripts\Activate.ps1
+python backend\voice_agent.py dev
+
+In Powershell 3: start react frontend: 
+cd C:\Prakash\sandbox\ecommerce-voice-poc\frontend
+npm run dev
+
+
+In another powershell: Voice Agent: python -u .\backend\twilio_voicebot.py 2>&1 | Tee-Object -FilePath .\twilio_debug.log
+
+
+In powershell start Cloudfare: & "C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --url http://localhost:8765
+Get the temp URL from prev step and update it in Twilio: <temp URL>/twiml
+In another powershell, check the temp URL: curl.exe -i <temp URL>/twiml
+
+twilio recovery code: TYY3JWB5XCBX5S76XMNBKF43
