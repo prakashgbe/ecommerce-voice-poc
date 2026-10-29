@@ -8,6 +8,7 @@ import struct
 import json
 import urllib.request
 import urllib.error
+import uuid
 
 try:
     from rag_service import generate_policy_answer
@@ -36,6 +37,23 @@ client = genai.Client()
 
 
 API_URL = os.getenv("ECOMMERCE_API_URL", "http://127.0.0.1:8000")
+
+
+def is_explicit_cancellation_confirmation(text: str) -> bool:
+    """Recognize a clear affirmative only while an order is awaiting confirmation."""
+    text = re.sub(r"[^a-z0-9' ]+", " ", (text or "").lower())
+    text = " ".join(text.split())
+    patterns = (
+        r"^(yes|yeah|yep|correct|right) (please )?(cancel|go ahead and cancel)( the order| it)?$",
+        r"^(yes|yeah|yep) (please )?(do it|cancel it|cancel the order)$",
+        r"^(please )?cancel (the order|it)$",
+        r"^go ahead and cancel (the order|it)$",
+        r"^i confirm( the cancellation| cancelling the order)?$",
+        r"^yes$",
+        r"^yeah$",
+        r"^yep$",
+    )
+    return any(re.fullmatch(pattern, text) for pattern in patterns)
 
 
 def api_request(path: str, method: str = "GET", payload: dict | None = None,
@@ -92,6 +110,35 @@ def live_tools():
             ),
         ),
         types.FunctionDeclaration(
+            name="prepare_order_cancellation",
+            description=(
+                "Check whether a specific order owned by the verified caller can be cancelled. "
+                "For a cancellation request, call this first and ask the caller to explicitly "
+                "confirm cancelling that exact order if eligible. Never cancel before confirmation."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={"order_id": types.Schema(type="STRING", description="Order ID to cancel")},
+                required=["order_id"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="confirm_order_cancellation",
+            description=(
+                "Execute cancellation for the exact order that is pending and has explicit caller confirmation. "
+                "After the caller says yes to the pending order, call this immediately and do not ask again. "
+                "The server-side tool verifies that explicit confirmation was captured for the pending order."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "order_id": types.Schema(type="STRING", description="The exact order ID the caller confirmed"),
+                    "customer_confirmation": types.Schema(type="STRING", description="Caller’s explicit affirmative response")
+                },
+                required=["order_id", "customer_confirmation"],
+            ),
+        ),
+        types.FunctionDeclaration(
             name="search_commerce_policies",
             description="Look up official e-commerce policies for refunds, returns, shipping, delivery, or cancellations.",
             parameters=types.Schema(
@@ -111,6 +158,7 @@ async def execute_live_tool(name: str, args: dict, state: dict) -> dict:
         if not customer_id or not re.fullmatch(r"\d{4}", pin):
             state["access_token"] = None
             state["customer_id"] = None
+            state["customer_name"] = None
             state["order_auth_prompted"] = False
             return {"verified": False, "message": "Please provide a valid customer ID and four-digit PIN."}
 
@@ -121,11 +169,13 @@ async def execute_live_tool(name: str, args: dict, state: dict) -> dict:
         if result.get("error") or not result.get("verified") or not result.get("access_token"):
             state["access_token"] = None
             state["customer_id"] = None
+            state["customer_name"] = None
             state["order_auth_prompted"] = False
             return {"verified": False, "message": "Verification failed. Please check your customer ID and PIN."}
 
         state["access_token"] = result["access_token"]
         state["customer_id"] = result.get("customer_id", customer_id)
+        state["customer_name"] = str(result.get("customer_name", "")).strip()
         return {
             "verified": True,
             "customer_name": result.get("customer_name", ""),
@@ -165,6 +215,105 @@ async def execute_live_tool(name: str, args: dict, state: dict) -> dict:
         # Return only customer-facing fields; never expose credentials.
         fields = ("order_id", "product", "amount", "status", "shipment_status", "order_date", "delivered_date")
         return {"success": True, "order": {k: result[k] for k in fields if k in result}}
+
+    if name in {"prepare_order_cancellation", "confirm_order_cancellation"}:
+        token = state.get("access_token")
+        customer_id = state.get("customer_id")
+        if not token or not customer_id:
+            return {"success": False, "message": "Please verify your identity with your customer ID and PIN before cancelling an order."}
+
+        order_id = str(args.get("order_id", "")).strip().upper()
+        if not order_id:
+            return {"success": False, "message": "Please provide the order ID."}
+
+        if name == "prepare_order_cancellation":
+            result = await asyncio.to_thread(
+                api_request, f"/api/orders/{order_id}", "GET", None, token
+            )
+            if result.get("status_code") == 401:
+                state["access_token"] = None
+                state["customer_id"] = None
+                state["pending_cancellation_order"] = None
+                return {"success": False, "message": "Your verification session expired. Please verify again."}
+            if result.get("error"):
+                state["pending_cancellation_order"] = None
+                return {"success": False, "message": "I couldn't find that order under your account or retrieve it right now."}
+
+            eligible = (
+                str(result.get("status", "")).lower() == "processing"
+                and str(result.get("shipment_status", "")).lower() == "not_shipped"
+            )
+            if not eligible:
+                state["pending_cancellation_order"] = None
+                return {
+                    "success": False,
+                    "order_id": result.get("order_id", order_id),
+                    "status": result.get("status"),
+                    "shipment_status": result.get("shipment_status"),
+                    "message": "This order is not eligible for cancellation. Orders must be processing and not yet shipped.",
+                }
+
+            state["pending_cancellation_order"] = order_id
+            state["confirmed_cancellation_order"] = None
+            state["cancellation_confirmation_text"] = ""
+            return {
+                "success": True,
+                "order_id": result.get("order_id", order_id),
+                "product": result.get("product", ""),
+                "status": result.get("status"),
+                "shipment_status": result.get("shipment_status"),
+                "message": "The order is eligible. Tell the caller which order and product will be cancelled, then ask them to clearly say yes to confirm. Do not cancel yet.",
+            }
+
+        # The receive loop marks confirmation only when an affirmative caller
+        # transcription arrives while this exact order is pending. This avoids
+        # relying on the model to echo the caller's words into tool arguments.
+        pending_order = state.get("pending_cancellation_order")
+        confirmed_order = state.get("confirmed_cancellation_order")
+        confirmation_text = str(state.get("cancellation_confirmation_text", ""))
+        if pending_order != order_id or confirmed_order != order_id:
+            return {
+                "success": False,
+                "message": "This order is still awaiting explicit confirmation. If the caller has just confirmed, use the pending order ID and execute the confirmation tool now; otherwise ask for confirmation once.",
+            }
+
+        # Recheck the order immediately before mutation to avoid cancelling an order
+        # that shipped or changed status while confirmation was being obtained.
+        check = await asyncio.to_thread(
+            api_request, f"/api/orders/{order_id}", "GET", None, token
+        )
+        if check.get("status_code") == 401:
+            state["access_token"] = None
+            state["customer_id"] = None
+            state["pending_cancellation_order"] = None
+            return {"success": False, "message": "Your verification session expired. Please verify again."}
+        if check.get("error"):
+            state["pending_cancellation_order"] = None
+            return {"success": False, "message": "I couldn't recheck that order. No cancellation was performed."}
+        if (
+            str(check.get("status", "")).lower() != "processing"
+            or str(check.get("shipment_status", "")).lower() != "not_shipped"
+        ):
+            state["pending_cancellation_order"] = None
+            return {"success": False, "message": "This order is no longer eligible for cancellation. No cancellation was performed."}
+
+        # Consume the caller's confirmation before making the mutation request,
+        # so a repeated tool call cannot reuse the same confirmation.
+        state["confirmed_cancellation_order"] = None
+        state["cancellation_confirmation_text"] = ""
+        result = await asyncio.to_thread(
+            api_request, f"/api/orders/{order_id}/cancel", "POST",
+            {"confirmation": True, "idempotency_key": str(uuid.uuid4())}, token
+        )
+        state["pending_cancellation_order"] = None
+        if result.get("error") or result.get("success") is not True or str(result.get("status", "")).lower() != "cancelled":
+            return {"success": False, "message": result.get("error", "The backend did not confirm cancellation. No success should be announced.")}
+        return {
+            "success": True,
+            "order_id": result.get("order_id", order_id),
+            "status": result.get("status"),
+            "message": "The backend confirmed that the order was cancelled successfully.",
+        }
 
     if name == "search_commerce_policies":
         if generate_policy_answer is None:
@@ -317,7 +466,16 @@ async def media_stream(websocket: WebSocket):
     # loop waits while pacing audio to Twilio, Gemini's websocket can miss keepalives.
     audio_out_queue = asyncio.Queue(maxsize=1000)
     audio_frames_received = 0
-    auth_state = {"access_token": None, "customer_id": None, "order_auth_prompted": False}
+    auth_state = {
+        "access_token": None,
+        "customer_id": None,
+        "customer_name": None,
+        "order_auth_prompted": False,
+        "latest_caller_text": "",
+        "pending_cancellation_order": None,
+        "confirmed_cancellation_order": None,
+        "cancellation_confirmation_text": "",
+    }
 
     try:
         async with client.aio.live.connect(
@@ -329,20 +487,33 @@ async def media_stream(websocket: WebSocket):
                 system_instruction=(
                     "You are a friendly e-commerce customer service voice assistant. "
                     "Speak clearly and concisely in English. Greet the caller and ask how you can help. "
-                    "For questions about returns, cancellations, shipping, delivery, or refunds, "
-                    "call search_commerce_policies and base your answer on its result. "
+                    "For general policy questions about returns, cancellations, shipping, delivery, or refunds, "
+                    "call search_commerce_policies and base your answer on its result. Do not volunteer, "
+                    "infer, or list whether any order is eligible for cancellation when giving an order summary. "
+                    "Discuss cancellation eligibility only if the caller explicitly asks about cancellation "
+                    "or requests to cancel a specific order, and then rely only on the cancellation tool result. "
+                    "If the caller asks to cancel an order, do not answer with policy alone: first verify "
+                    "the customer, then call prepare_order_cancellation with the order ID. If the order is "
+                    "eligible, tell the caller which order ID and product they are asking to cancel and ask for "
+                    "explicit confirmation. Only after the caller clearly says yes to cancelling that exact order, "
+                    "call confirm_order_cancellation. Never cancel without explicit confirmation, and never "
+                    "claim success unless the tool returns success=true and status=cancelled. "
                     "For any order-status, order-history, or order-detail request, first ask for "
                     "the customer's ID and four-digit PIN if you have not already collected them "
                     "during this call. Then call verify_customer. Do not access or disclose order "
-                    "information unless the tool returns verified=true. After successful verification, "
-                    "use get_my_orders for order history or get_my_order_details for a specific order. "
-                    "If the caller asks where an order is but does not provide an order ID, verify "
-                    "them first and then retrieve their orders; ask which order they mean if there "
-                    "is more than one. Never invent order details, tracking information, or policies. "
+                    "information unless the tool returns verified=true. After verification succeeds, "
+                    "immediately address the caller by their full name exactly as returned in customer_name; "
+                    "use that full name when greeting or acknowledging them, not just their first name. "
+                    "If customer_name is missing, do not invent a name. Use get_my_orders for order history "
+                    "or get_my_order_details for a specific order. Whenever you mention or list an order, "
+                    "always say its order ID as well as its product name, for example 'order ORD1001 for "
+                    "wireless headphones'. This applies to order summaries, status updates, and cancellation "
+                    "discussions. If the caller asks where an order is but does not provide an order ID, verify "
+                    "them first and then retrieve their orders; ask which order they mean if there is more than one. "
+                    "Never invent order details, tracking information, cancellation eligibility, or policies. "
                     "Never speak or reveal access tokens. Do not repeat or ask for the PIN again after "
                     "verification succeeds in this call. If verification or lookup fails, explain this "
-                    "politely. Do not cancel orders or create return requests; explain policy only. "
-                    "Never say you checked an order unless the corresponding tool succeeded."
+                    "politely. Never say you checked an order unless the corresponding tool succeeded. "
                 ),
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
@@ -379,7 +550,20 @@ async def media_stream(websocket: WebSocket):
                             for call in tool_call.function_calls:
                                 args = dict(call.args or {})
                                 logger.info("Gemini requested tool: %s", call.name)
-                                result = await execute_live_tool(call.name, args, auth_state)
+                                try:
+                                    result = await execute_live_tool(call.name, args, auth_state)
+                                except Exception:
+                                    # Keep one unexpected tool exception from killing the
+                                    # Gemini receive loop and leaving the caller in silence.
+                                    logger.exception("Tool execution failed: %s", call.name)
+                                    result = {
+                                        "success": False,
+                                        "message": "I couldn't complete that action because of an internal error. No success should be announced.",
+                                    }
+                                logger.info(
+                                    "Tool completed: %s success=%s status=%s",
+                                    call.name, result.get("success"), result.get("status")
+                                )
                                 function_responses.append(
                                     types.FunctionResponse(
                                         id=call.id,
@@ -402,12 +586,35 @@ async def media_stream(websocket: WebSocket):
                         if content.input_transcription:
                             caller_text = (content.input_transcription.text or "").strip()
                             logger.info("Caller transcription: %s", caller_text)
+                            auth_state["latest_caller_text"] = caller_text.lower().strip()
+
+                            # Deterministically capture a clear affirmative while an order
+                            # is pending, then steer Gemini to execute rather than ask again.
+                            pending_order = auth_state.get("pending_cancellation_order")
+                            if pending_order and is_explicit_cancellation_confirmation(caller_text):
+                                auth_state["confirmed_cancellation_order"] = pending_order
+                                auth_state["cancellation_confirmation_text"] = caller_text
+                                logger.info("Cancellation confirmation received for pending order %s", pending_order)
+                                await session.send_client_content(
+                                    turns=types.Content(
+                                        role="user",
+                                        parts=[types.Part(text=(
+                                            f"The caller explicitly confirmed cancellation with these words: {caller_text!r}. "
+                                            f"Order {pending_order} is already pending confirmation and that confirmation has now been received. "
+                                            f"Call confirm_order_cancellation now with order_id={pending_order!r} and "
+                                            f"customer_confirmation={caller_text!r}. Do not ask for confirmation again. "
+                                            "Only report success if the tool returns success=true and status=cancelled."
+                                        ))],
+                                    ),
+                                    turn_complete=True,
+                                )
 
                             # Keep the existing live-audio flow, but explicitly steer Gemini
                             # when the caller asks about an order before authenticating.
                             order_terms = (
                                 "order", "orders", "tracking", "track my", "where is my",
                                 "delivery status", "shipment", "shipped", "purchase history",
+                                "cancel", "cancellation",
                             )
                             if (
                                 caller_text
@@ -421,7 +628,7 @@ async def media_stream(websocket: WebSocket):
                                     turns=types.Content(
                                         role="user",
                                         parts=[types.Part(text=(
-                                            "The caller has asked an order-related question and is not verified. "
+                                            "The caller has asked an order-related question or cancellation and is not verified. "
                                             "Your next spoken response must ask them for their customer ID and "
                                             "four-digit verification PIN. Do not claim to check any order yet."
                                         ))],
