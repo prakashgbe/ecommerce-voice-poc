@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E-commerce Admin</title>
+<style>
+:root{font-family:Inter,Segoe UI,Arial,sans-serif;color:#182230;background:#f4f7fb;font-synthesis:none}
+*{box-sizing:border-box}body{margin:0}.top{background:#14263d;color:white;padding:22px 28px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.top h1{font-size:22px;margin:0 0 5px}.top p{margin:0;color:#c7d4e4;font-size:13px}
+main{max-width:1250px;margin:24px auto;padding:0 18px}.toolbar,.panel{background:white;border:1px solid #e1e7ef;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 4px 16px #172b4d08}
+.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.toolbar input{min-width:240px;flex:1}
+.tabs{display:flex;gap:8px}.tab{border:1px solid #d4dce7;background:#fff;color:#334155;border-radius:9px;padding:10px 15px;cursor:pointer;font-weight:600}.tab.active{background:#2357d7;border-color:#2357d7;color:white}
+button{cursor:pointer;border:0;border-radius:8px;padding:9px 13px;font-weight:600;background:#2357d7;color:#fff}button.secondary{background:#edf2f8;color:#24364b}button.danger{background:#c83b45}button:disabled{opacity:.55;cursor:wait}
+input,select{font:inherit;border:1px solid #cbd5e1;border-radius:8px;padding:10px 11px;width:100%;background:white;color:#172033}label{display:block;font-size:12px;font-weight:700;color:#536276;margin-bottom:6px}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.field{min-width:0}.span2{grid-column:span 2}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.panel h2{font-size:17px;margin:0}.muted{color:#69788c;font-size:13px}
+.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap}th,td{text-align:left;padding:12px 10px;border-bottom:1px solid #edf0f5}th{color:#66758a;font-size:11px;text-transform:uppercase;letter-spacing:.05em;background:#fafbfd}td.actions{display:flex;gap:7px}
+.pill{display:inline-block;border-radius:999px;padding:4px 8px;background:#eaf1ff;color:#214fbd;font-size:11px;font-weight:700}.notice{padding:11px 13px;border-radius:9px;margin:0 0 15px;font-size:13px;display:none}.notice.show{display:block}.notice.error{background:#fff0f0;color:#9d252c}.notice.ok{background:#e9f8ef;color:#176b3b}
+.empty{text-align:center;color:#7b8797;padding:30px}.hidden{display:none!important}
+dialog{border:0;border-radius:15px;width:min(700px,calc(100% - 28px));padding:0;box-shadow:0 20px 70px #0d1b2f40}dialog::backdrop{background:#0d1b2f88}.modal-head{padding:18px 22px;border-bottom:1px solid #e7ebf1;display:flex;justify-content:space-between;align-items:center}.modal-body{padding:20px 22px}.modal-foot{padding:14px 22px;border-top:1px solid #e7ebf1;display:flex;justify-content:flex-end;gap:8px}.modal-head h2{margin:0;font-size:18px}.modal-foot button{min-width:88px}
+.keyrow{display:flex;gap:8px;align-items:end;flex-wrap:wrap}.keyrow .field{flex:1;min-width:220px}.keyrow button{height:40px}.stat{font-size:12px;color:#69788c;margin-left:auto}
+@media(max-width:850px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.span2{grid-column:span 2}}
+@media(max-width:520px){.grid{grid-template-columns:1fr}.span2{grid-column:span 1}.top{padding:18px}.tabs{width:100%}.tab{flex:1}.toolbar input{min-width:100%}}
+</style>
+</head>
+<body>
+<header class="top"><div><h1>Commerce Admin</h1><p>Manage customer records and orders for the voice-service demo</p></div><span class="pill">LOCAL POC</span></header>
+<main>
+  <section class="toolbar">
+    <div class="field" style="min-width:280px;flex:1"><label for="adminKey">Admin API key</label><input id="adminKey" type="password" autocomplete="off" placeholder="Enter ADMIN_API_KEY"></div>
+    <button id="connectBtn">Connect</button>
+    <span class="stat" id="connection">Not connected</span>
+  </section>
+  <div id="notice" class="notice"></div>
+  <section class="panel">
+    <div class="panel-head"><div class="tabs"><button class="tab active" data-tab="customers">Customers</button><button class="tab" data-tab="orders">Orders</button></div><button id="addBtn">+ Add customer</button></div>
+    <div class="toolbar" style="padding:0;border:0;box-shadow:none;margin-bottom:12px"><input id="search" placeholder="Search by ID, name, product, status…"><span class="stat" id="count"></span></div>
+    <div class="table-wrap"><table><thead id="tableHead"></thead><tbody id="tableBody"></tbody></table></div>
+  </section>
+  <p class="muted">Changes are saved to the backend. Deleting a customer with existing orders is blocked to protect order history.</p>
+</main>
+<dialog id="editor">
+  <form id="editForm">
+    <div class="modal-head"><h2 id="modalTitle">Add record</h2><button type="button" class="secondary" id="closeX" aria-label="Close">✕</button></div>
+    <div class="modal-body"><div id="fields" class="grid"></div><p id="formHelp" class="muted"></p></div>
+    <div class="modal-foot"><button type="button" class="secondary" id="cancelBtn">Cancel</button><button type="submit" id="saveBtn">Save changes</button></div>
+  </form>
+</dialog>
+<script>
+const API = "";
+let activeTab = "customers", rows = [], editId = null, mode = "create", busy = false;
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const headers = {
+ customers: [["customer_id","Customer ID"],["name","Name"],["email","Email"],["phone","Phone"]],
+ orders: [["order_id","Order ID"],["customer_id","Customer ID"],["product","Product"],["amount","Amount"],["status","Status"],["shipment_status","Shipment"]]
+};
+function message(text, type="ok"){const n=$("notice");n.textContent=text;n.className=`notice show ${type}`;}
+function clearMessage(){$("notice").className="notice";}
+function setBusy(v){busy=v;$("connectBtn").disabled=v;$("addBtn").disabled=v;$("saveBtn").disabled=v;}
+async function api(path, options={}) {
+ const key=$("adminKey").value.trim();
+ const res=await fetch(API+path,{...options,headers:{"Content-Type":"application/json","X-Admin-Key":key,...(options.headers||{})}});
+ const data=await res.json().catch(()=>({detail:res.statusText}));
+ if(!res.ok) throw new Error(data.detail||data.message||`Request failed (${res.status})`);
+ return data;
+}
+async function loadRows(){
+ setBusy(true);clearMessage();
+ try { rows=await api(`/api/admin/${activeTab}`); $("connection").textContent="Connected"; $("connection").style.color="#176b3b"; render(); }
+ catch(e){message(e.message,"error");$("connection").textContent="Connection failed";$("connection").style.color="#b4232c";}
+ finally{setBusy(false);}
+}
+function render(){
+ $("tableHead").innerHTML=`<tr>${headers[activeTab].map(([k,label])=>`<th>${label}</th>`).join("")}<th>Actions</th></tr>`;
+ const q=$("search").value.trim().toLowerCase();
+ const filtered=rows.filter(r=>Object.values(r).join(" ").toLowerCase().includes(q));
+ $("count").textContent=`${filtered.length} record${filtered.length===1?"":"s"}`;
+ $("tableBody").innerHTML=filtered.map(r=>{
+   const id=r[activeTab==="customers"?"customer_id":"order_id"];
+   return `<tr>${headers[activeTab].map(([k])=>`<td>${k==="status"||k==="shipment_status"?`<span class="pill">${esc(r[k])}</span>`:esc(r[k]??"—")}</td>`).join("")}<td class="actions"><button class="secondary" data-edit="${esc(id)}">Edit</button><button class="danger" data-delete="${esc(id)}">Delete</button></td></tr>`;
+ }).join("") || `<tr><td colspan="${headers[activeTab].length+1}" class="empty">${rows.length?"No matching records.":"No records found or not connected."}</td></tr>`;
+ $("tableBody").querySelectorAll("[data-edit]").forEach(b=>b.addEventListener("click",()=>openEditor("edit",b.dataset.edit)));
+ $("tableBody").querySelectorAll("[data-delete]").forEach(b=>b.addEventListener("click",()=>deleteRow(b.dataset.delete)));
+ $("addBtn").textContent=`+ Add ${activeTab==="customers"?"customer":"order"}`;
+}
+function field(name,label,value="",opts={}){
+ const required=opts.required?"required":"";
+ const type=opts.type||"text";
+ let control;
+ if(opts.options){control=`<select name="${name}" ${required}>${opts.options.map(x=>`<option value="${esc(x)}" ${String(value)===x?"selected":""}>${esc(x)}</option>`).join("")}</select>`;}
+ else control=`<input name="${name}" type="${type}" value="${esc(value)}" ${required} ${opts.pattern?`pattern="${opts.pattern}"`:""} placeholder="${esc(opts.placeholder||"")}" ${opts.min!==undefined?`min="${opts.min}"`:""} ${opts.step?`step="${opts.step}"`:""} autocomplete="off">`;
+ return `<div class="field ${opts.span2?"span2":""}"><label>${label}</label>${control}</div>`;
+}
+function openEditor(nextMode,id=null){
+ mode=nextMode;editId=id;
+ const r=id?rows.find(x=>String(x[activeTab==="customers"?"customer_id":"order_id"])===String(id)):{};
+ $("modalTitle").textContent=`${mode==="create"?"Add":"Edit"} ${activeTab==="customers"?"customer":"order"}`;
+ let fields="";
+ if(activeTab==="customers"){
+   fields+=field("customer_id","Customer ID",r?.customer_id,{required:true});
+   fields+=field("name","Full name",r?.name,{required:true});
+   fields+=field("email","Email",r?.email||"",{type:"email"});
+   fields+=field("phone","Phone",r?.phone||"");
+   fields+=field("verification_pin",mode==="create"?"4-digit verification PIN":"New PIN (leave blank to keep current)","",{required:mode==="create",pattern:mode==="create"?"[0-9]{4}":"([0-9]{4})?",placeholder:mode==="create"?"1234":"••••"});
+ } else {
+   fields+=field("order_id","Order ID",r?.order_id,{required:true});
+   fields+=field("customer_id","Customer ID",r?.customer_id,{required:true});
+   fields+=field("product","Product",r?.product,{required:true,span2:true});
+   fields+=field("amount","Amount",r?.amount,{required:true,type:"number",min:0,step:"0.01"});
+   fields+=field("status","Order status",r?.status||"processing",{required:true,options:["processing","shipped","delivered","cancelled","returned"]});
+   fields+=field("shipment_status","Shipment status",r?.shipment_status||"not_shipped",{required:true,options:["not_shipped","shipped","in_transit","delivered","returned"]});
+   fields+=field("order_date","Order date",r?.order_date||new Date().toISOString().slice(0,10),{required:true});
+   fields+=field("delivered_date","Delivered date",r?.delivered_date||"",{});
+ }
+ $("fields").innerHTML=fields;
+ $("formHelp").textContent=activeTab==="customers"?"Customer IDs must be unique. The PIN is never displayed.": "The customer ID must refer to an existing customer.";
+ $("editor").showModal();
+}
+async function saveRow(event){
+ event.preventDefault();if(busy)return;
+ const form=new FormData($("editForm"));const payload=Object.fromEntries(form.entries());
+ if(activeTab==="customers"&&mode==="edit"&&!payload.verification_pin)delete payload.verification_pin;
+ if(activeTab==="orders")payload.amount=Number(payload.amount);
+ const idKey=activeTab==="customers"?"customer_id":"order_id";
+ const original=rows.find(x=>String(x[idKey])===String(editId));
+ if(mode==="edit"&&payload[idKey]!==editId){message(`${idKey} cannot be changed when editing. Delete and recreate the record if necessary.`,"error");return;}
+ setBusy(true);
+ try{
+   const path=`/api/admin/${activeTab}`+(mode==="edit"?`/${encodeURIComponent(editId)}`:"");
+   await api(path,{method:mode==="create"?"POST":"PUT",body:JSON.stringify(payload)});
+   $("editor").close();message(`${activeTab==="customers"?"Customer":"Order"} ${mode==="create"?"created":"updated"} successfully.`,"ok");await loadRows();
+ }catch(e){message(e.message,"error");}
+ finally{setBusy(false);}
+}
+async function deleteRow(id){
+ const label=activeTab==="customers"?"customer":"order";
+ if(!confirm(`Delete ${label} ${id}? This cannot be undone.`))return;
+ setBusy(true);
+ try{await api(`/api/admin/${activeTab}/${encodeURIComponent(id)}`,{method:"DELETE"});message(`${label[0].toUpperCase()+label.slice(1)} deleted.`,"ok");await loadRows();}
+ catch(e){message(e.message,"error");}
+ finally{setBusy(false);}
+}
+document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{
+ activeTab=b.dataset.tab;document.querySelectorAll("[data-tab]").forEach(x=>x.classList.toggle("active",x===b));$("search").value="";loadRows();
+}));
+$("connectBtn").addEventListener("click",loadRows);
+$("addBtn").addEventListener("click",()=>openEditor("create"));
+$("search").addEventListener("input",render);
+$("editForm").addEventListener("submit",saveRow);
+$("cancelBtn").addEventListener("click",()=>$("editor").close());
+$("closeX").addEventListener("click",()=>$("editor").close());
+</script>
+</body>
+</html>

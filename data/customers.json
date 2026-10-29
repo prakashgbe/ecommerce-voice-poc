@@ -1,21 +1,23 @@
-
 [
   {
     "customer_id": "CUST1001",
-    "name": "Arun Kumar",
-    "email": "arun@example.com",
-    "verification_pin": "4821"
+    "name": "Prakash Gururajan",
+    "email": "prakash@example.com",
+    "verification_pin": "1234",
+    "phone": ""
   },
   {
     "customer_id": "CUST1002",
-    "name": "Meera Sharma",
-    "email": "meera@example.com",
-    "verification_pin": "7352"
+    "name": "John Williams",
+    "email": "john@example.com",
+    "verification_pin": "1234",
+    "phone": ""
   },
   {
     "customer_id": "CUST1003",
-    "name": "Rahul Verma",
-    "email": "rahul@example.com",
-    "verification_pin": "6194"
+    "name": "Mary Smith",
+    "email": "mary@example.com",
+    "verification_pin": "1234",
+    "phone": ""
   }
 ]

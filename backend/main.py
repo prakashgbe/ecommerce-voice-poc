@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
 
+from backend.admin_api import router as admin_router
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 
@@ -30,6 +32,8 @@ app = FastAPI(
 )
 
 load_dotenv(PROJECT_ROOT / ".env")
+
+app.include_router(admin_router)
 
 app.add_middleware(
     CORSMiddleware,
